@@ -1,8 +1,12 @@
 flask==3.0.3
-face-recognition==1.3.0
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
 pillow==10.3.0
 retinaface==0.0.15
 tensorflow==2.15.0
 tf-keras==2.15.0
+
+# ✅ install prebuilt dlib/face-recognition from wheels
+cmake
+dlib-bin
+face-recognition==1.3.0

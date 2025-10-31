@@ -1,5 +1,7 @@
-Flask
-deepface
+flask
+face-recognition
 opencv-python-headless
-tensorflow
 numpy
+pillow
+retinaface
+tf-keras

@@ -8,7 +8,7 @@ import random
 app = Flask(__name__)
 
 # ==========================================
-# ✅ Root Endpoint — Health Check
+# ✅ HEALTH CHECK
 # ==========================================
 @app.route("/")
 def home():
@@ -16,7 +16,7 @@ def home():
 
 
 # ==========================================
-# 🔍 Find Similar Faces Endpoint
+# 🔍 FIND SIMILAR FACES
 # ==========================================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
@@ -31,17 +31,28 @@ def find_similar():
         if not folder_url or not image_url or not school_id:
             return jsonify({"error": "Missing parameters"}), 400
 
-        # --- Download the target image ---
-        try:
-            target_path = tempfile.mktemp(suffix=".jpg")
-            r = requests.get(image_url, timeout=15)
-            r.raise_for_status()
-            with open(target_path, "wb") as f:
-                f.write(r.content)
-        except Exception as e:
-            return jsonify({"error": f"Failed to download target image: {e}"}), 500
+        # ----------------------------
+        # 🧱 Helper: Download image safely
+        # ----------------------------
+        def download_image(url):
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Accept": "image/*,*/*;q=0.8",
+                }
+                r = requests.get(url, headers=headers, timeout=15)
+                r.raise_for_status()
+                temp_path = tempfile.mktemp(suffix=".jpg")
+                with open(temp_path, "wb") as f:
+                    f.write(r.content)
+                return temp_path
+            except Exception as e:
+                raise RuntimeError(f"Failed to download image: {e}")
 
-        # --- Get image list from folder API ---
+        # --- Download target image ---
+        target_path = download_image(image_url)
+
+        # --- Fetch image list from PHP API ---
         list_api = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
         try:
             resp = requests.get(list_api, timeout=15)
@@ -54,7 +65,7 @@ def find_similar():
             print("❌ Invalid response from list_images.php:", resp.text[:300])
             return jsonify({"error": "Invalid folder response"}), 500
 
-        # --- Limit comparisons for faster results ---
+        # --- Limit comparisons for performance ---
         if len(images) > 15:
             images = random.sample(images, 15)
 
@@ -65,11 +76,7 @@ def find_similar():
         for i, img_name in enumerate(images, 1):
             img_url = f"{folder_url}/{img_name}"
             try:
-                temp_img = tempfile.mktemp(suffix=".jpg")
-                r = requests.get(img_url, timeout=15)
-                r.raise_for_status()
-                with open(temp_img, "wb") as f:
-                    f.write(r.content)
+                temp_img = download_image(img_url)
 
                 result = DeepFace.verify(
                     img1_path=target_path,
@@ -83,7 +90,7 @@ def find_similar():
                     similar.append(img_name)
 
             except Exception as e:
-                print("⚠️ Error comparing", img_name, ":", str(e))
+                print(f"⚠️ Error comparing {img_name}: {e}")
                 continue
 
         print("✅ Done! Found similar:", similar)
@@ -95,7 +102,7 @@ def find_similar():
 
 
 # ==========================================
-# 🚀 Run the Flask app (Render uses port 5000)
+# 🚀 FLASK STARTUP
 # ==========================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

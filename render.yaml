@@ -4,9 +4,17 @@ services:
     env: python
     region: oregon
     plan: free
+
     buildCommand: |
+      echo "🚀 Starting build..."
       pip install --upgrade pip setuptools wheel
       pip install --no-cache-dir -r requirements.txt
-    startCommand: gunicorn --workers=2 --threads=4 --timeout 300 --bind 0.0.0.0:$PORT app:app
+      echo "✅ Build complete."
+
+    startCommand: gunicorn --workers=2 --threads=4 --timeout 600 --bind 0.0.0.0:$PORT app:app
+
     envVars:
       PYTHON_VERSION: 3.10.13
+      PYTHONUNBUFFERED: 1
+      TF_CPP_MIN_LOG_LEVEL: 2  # suppress TensorFlow warnings
+      DEEPFACE_HOME: /tmp/.deepface  # DeepFace cache temp path

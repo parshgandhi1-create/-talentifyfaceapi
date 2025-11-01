@@ -1,7 +1,8 @@
 # =====================================
-# Talentify AI Face API - Render Edition
+# Talentify Face API (Render Version)
 # =====================================
 
+# Core
 setuptools>=68.0.0
 wheel>=0.41.2
 pip>=23.3
@@ -10,9 +11,8 @@ pip>=23.3
 flask==3.0.3
 gunicorn==23.0.0
 requests==2.32.3
-beautifulsoup4==4.12.2
 
-# Image + numerical libraries
+# Image + math
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
 pillow==10.2.0

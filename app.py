@@ -4,111 +4,135 @@ import requests
 import cv2
 import numpy as np
 import os
-from urllib.parse import unquote
+import tempfile
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+import shutil
 
 app = Flask(__name__)
 
-# ================================
-# Helper: Download image safely
-# ================================
+# ===========================
+# Helper: Download single image
+# ===========================
 def download_image(url):
     try:
-        url = unquote(url)  # Decode ?url=https%3A%2F%2F...
-        print(f"[Download] Trying: {url}")
-
-        headers = {"User-Agent": "Talentify-Face/1.0"}
-        response = requests.get(url, headers=headers, timeout=25)
-
+        print(f"Downloading image: {url}")
+        response = requests.get(url, timeout=20)
         if response.status_code != 200:
-            print(f"[Download] ❌ Failed with {response.status_code}")
+            print(f"❌ HTTP {response.status_code}")
             return None
-
-        img_array = np.frombuffer(response.content, np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        image_array = np.frombuffer(response.content, np.uint8)
+        img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
         if img is None:
-            print("[Download] ❌ OpenCV could not decode image")
-        else:
-            print("[Download] ✅ Image loaded successfully")
+            print("❌ OpenCV decode failed")
         return img
     except Exception as e:
-        print("[Download] Exception:", e)
+        print("Download exception:", e)
         return None
 
 
-# ================================
-# Route: /find_similar
-# ================================
+# ===========================
+# Helper: Download all school images
+# ===========================
+def download_folder_images(folder_url, school_id):
+    temp_dir = os.path.join("/tmp", f"school_{school_id}")
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        print(f"📁 Fetching folder: {folder_url}")
+        html = requests.get(folder_url, timeout=20).text
+        soup = BeautifulSoup(html, "html.parser")
+
+        count = 0
+        for link in soup.find_all("a"):
+            href = link.get("href")
+            if href and href.lower().endswith((".jpg", ".jpeg", ".png")):
+                file_url = urljoin(folder_url + "/", href)
+                file_name = os.path.basename(href)
+                try:
+                    img_data = requests.get(file_url, timeout=20).content
+                    with open(os.path.join(temp_dir, file_name), "wb") as f:
+                        f.write(img_data)
+                    count += 1
+                except Exception as e:
+                    print(f"⚠️ Failed {file_url}: {e}")
+        print(f"✅ Downloaded {count} images to {temp_dir}")
+        return temp_dir if count > 0 else None
+    except Exception as e:
+        print("Download folder error:", e)
+        return None
+
+
+# ===========================
+# API: Find Similar Faces
+# ===========================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
-        data = request.get_json(force=True)
+        data = request.json
         print("Incoming JSON:", data)
 
-        # Validate input
-        required = ["school_id", "folder_url", "image_url"]
-        if not all(k in data and data[k] for k in required):
+        # --- Validate ---
+        if not data or "school_id" not in data or "folder_url" not in data or "image_url" not in data:
             return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
+        school_id = data["school_id"]
         folder_url = data["folder_url"]
         target_url = data["image_url"]
 
-        # Check target image
+        # --- Download target ---
         target = download_image(target_url)
         if target is None:
-            return jsonify({"error": f"Failed to download target image: {target_url}"}), 400
+            return jsonify({"error": "Failed to download target image"}), 400
 
-        # Ensure folder accessible
-        print(f"[Folder] Checking: {folder_url}")
-        try:
-            response = requests.get(folder_url, timeout=15)
-            if response.status_code != 200:
-                print("[Folder] ❌ Folder not accessible")
-                return jsonify({"error": "Failed to access folder URL"}), 400
-        except Exception as e:
-            print("[Folder] Exception:", e)
+        # --- Download folder images ---
+        db_local = download_folder_images(folder_url, school_id)
+        if not db_local:
             return jsonify({"error": "Failed to access folder URL"}), 400
 
-        # Perform face comparison
+        # --- DeepFace comparison ---
+        print("🔍 Running DeepFace comparison...")
         try:
-            print("[DeepFace] Starting comparison...")
             results = DeepFace.find(
                 img_path=target_url,
-                db_path=folder_url,
+                db_path=db_local,
                 enforce_detection=False,
                 silent=True
             )
-            print("[DeepFace] ✅ Completed")
         except Exception as e:
-            print("[DeepFace] ❌ Error:", e)
-            return jsonify({"error": f"DeepFace failed: {str(e)}"}), 500
+            print("DeepFace error:", e)
+            return jsonify({"error": f"DeepFace failed: {e}"}), 500
 
         if results is None or len(results) == 0:
             return jsonify({"similar_images": []})
 
-        # Normalize results
+        # --- Format output ---
         output = []
-        df = results[0]
-        for _, row in df.iterrows():
-            identity = row.get("identity", "")
-            distance = float(row.get("distance", 1.0))
-            similarity = round(1 - distance, 2)
+        for r in results[0].to_dict(orient="records"):
             output.append({
-                "image_url": identity,
-                "similarity": similarity
+                "image_url": r.get("identity"),
+                "similarity": round(1 - float(r.get("distance", 1.0)), 2)
             })
 
         return jsonify({"similar_images": output})
 
     except Exception as e:
-        print("[Unhandled Exception]", e)
+        print("Unhandled exception:", e)
         return jsonify({"error": str(e)}), 500
 
 
+# ===========================
+# Root Route
+# ===========================
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"status": "ok", "message": "Talentify AI API live 🚀"})
+    return jsonify({"status": "ok", "message": "Talentify AI Face API is live 🚀"})
 
 
+# ===========================
+# Run App
+# ===========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)

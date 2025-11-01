@@ -6,13 +6,15 @@ services:
     region: oregon
 
     buildCommand: |
+      echo "🚀 Installing dependencies..."
       pip install --upgrade pip setuptools wheel
-      pip install -r requirements.txt
+      pip install --no-cache-dir -r requirements.txt
+      echo "✅ Build complete."
 
-    startCommand: python app.py
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --timeout 300
 
     envVars:
       PYTHON_VERSION: 3.10.13
-      TF_CPP_MIN_LOG_LEVEL: "2"        # Suppress TensorFlow debug spam
-      DEEPFACE_HOME: "/opt/render/.deepface"  # Cache models safely
+      TF_CPP_MIN_LOG_LEVEL: "2"
+      DEEPFACE_HOME: "/opt/render/.deepface"
       PORT: 5000

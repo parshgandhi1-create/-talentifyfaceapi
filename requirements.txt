@@ -1,6 +1,5 @@
 # =====================================
-# Talentify Face API - Final Requirements
-# Optimized for Render/Railway Fast Deploy
+# Talentify Face API - Render Deployment
 # =====================================
 
 # Core tools

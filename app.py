@@ -1,124 +1,91 @@
 from flask import Flask, request, jsonify
+import os, tempfile, requests, traceback
 from deepface import DeepFace
-import requests
-import os
-import tempfile
-import random
+import cv2
+import numpy as np
 
 app = Flask(__name__)
 
-# ==================================================
-# ✅ Root Endpoint — Health Check
-# ==================================================
-@app.route("/")
-def home():
-    return jsonify({"status": "Talentify Face Match API is running ✅"})
+# =========================================
+# 🧩 SAFE IMAGE DOWNLOAD (handles 406 error)
+# =========================================
+def download_image(image_url, save_path):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; TalentifyFaceAPI/1.0)",
+            "Accept": "image/*,*/*;q=0.8"
+        }
+        response = requests.get(image_url, headers=headers, timeout=15, allow_redirects=True)
+        content_type = response.headers.get('Content-Type', '')
+        if response.status_code == 200 and 'image' in content_type:
+            with open(save_path, "wb") as f:
+                f.write(response.content)
+            return True
+        else:
+            print(f"⚠️ Not an image: {response.status_code}, {content_type}")
+            return False
+    except Exception as e:
+        print(f"❌ Download failed: {e}")
+        return False
 
-
-# ==================================================
-# 🔍 Find Similar Faces Endpoint
-# ==================================================
+# =========================================
+# 🔍 FIND SIMILAR FACES
+# =========================================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
         data = request.get_json(force=True)
-        print("📩 Incoming data:", data)
+        target_url = data.get("target_url")
+        image_urls = data.get("image_urls", [])
+        threshold = float(data.get("threshold", 0.35))
 
-        school_id = data.get("school_id")
-        folder_url = data.get("folder_url")
-        image_url = data.get("image_url")
-
-        if not all([school_id, folder_url, image_url]):
+        if not target_url or not image_urls:
             return jsonify({"error": "Missing parameters"}), 400
 
-        # ==================================================
-        # 🖼️ Step 1 — Download Target Image via Proxy
-        # ==================================================
-        try:
-            target_path = tempfile.mktemp(suffix=".jpg")
-            r = requests.get(image_url, timeout=20)
-            r.raise_for_status()
-            with open(target_path, "wb") as f:
-                f.write(r.content)
-        except Exception as e:
-            return jsonify({"error": f"Failed to download target image: {e}"}), 500
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = os.path.join(tmpdir, "target.jpg")
 
-        # ==================================================
-        # 📁 Step 2 — Get Image List via PHP API
-        # ==================================================
-        list_api = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-        try:
-            resp = requests.get(list_api, timeout=20)
-            resp.raise_for_status()
-            images = resp.json()
-        except Exception as e:
-            return jsonify({"error": f"Failed to fetch image list: {e}"}), 500
+            if not download_image(target_url, target_path):
+                return jsonify({"error": f"Failed to download target image: {target_url}"}), 400
 
-        if not isinstance(images, list):
-            print("❌ Invalid response from list_images.php:", resp.text[:300])
-            return jsonify({"error": "Invalid folder response"}), 500
+            results = []
+            for url in image_urls:
+                candidate_path = os.path.join(tmpdir, os.path.basename(url))
+                if not download_image(url, candidate_path):
+                    continue
 
-        # ==================================================
-        # ⚙️ Step 3 — Limit Sample for Faster Comparison
-        # ==================================================
-        if len(images) > 20:
-            images = random.sample(images, 20)
+                try:
+                    # Compare using DeepFace tuned for Asian faces
+                    verify = DeepFace.verify(
+                        img1_path=target_path,
+                        img2_path=candidate_path,
+                        model_name="Facenet512",  # More accurate for Indian/Asian faces
+                        distance_metric="cosine",
+                        enforce_detection=False
+                    )
+                    distance = verify.get("distance", 1.0)
+                    verified = verify.get("verified", False)
 
-        print(f"🧠 Comparing against {len(images)} images...")
-        similar = []
+                    if verified or distance < threshold:
+                        results.append({
+                            "image_url": url,
+                            "similarity_score": round(1 - distance, 3)
+                        })
+                except Exception as e:
+                    print(f"⚠️ Comparison error: {e}")
+                    continue
 
-        # ==================================================
-        # 🧩 Step 4 — Compare Faces Using ArcFace + RetinaFace
-        # ==================================================
-        for i, img_name in enumerate(images, 1):
-            img_url = f"{folder_url}/{img_name}"
-
-            try:
-                temp_img = tempfile.mktemp(suffix=".jpg")
-                r = requests.get(img_url, timeout=15)
-                r.raise_for_status()
-                with open(temp_img, "wb") as f:
-                    f.write(r.content)
-
-                result = DeepFace.verify(
-                    img1_path=target_path,
-                    img2_path=temp_img,
-                    model_name="ArcFace",          # Better for Indian/Asian faces
-                    detector_backend="retinaface", # More accurate facial alignment
-                    distance_metric="cosine",
-                    enforce_detection=False
-                )
-
-                verified = result.get("verified")
-                distance = result.get("distance", 1.0)
-                print(f"{i}/{len(images)} 🔍 {img_name} -> verified={verified}, distance={distance:.3f}")
-
-                if verified and distance < 0.45:  # Lower threshold = stricter match
-                    similar.append({
-                        "image": img_name,
-                        "distance": distance
-                    })
-
-            except Exception as e:
-                print("⚠️ Error comparing", img_name, ":", str(e))
-                continue
-
-        # ==================================================
-        # 📦 Step 5 — Return Result
-        # ==================================================
-        if not similar:
-            return jsonify({"message": "No valid response or no similar images found."}), 200
-
-        print("✅ Done! Found similar:", similar)
-        return jsonify({"similar_images": similar})
+        if not results:
+            return jsonify({"message": "No similar images found."})
+        return jsonify({"matches": results})
 
     except Exception as e:
-        print("💥 Exception:", str(e))
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/")
+def home():
+    return "✅ Talentify Face API is running."
 
-# ==================================================
-# 🚀 Run (Render uses port 5000)
-# ==================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

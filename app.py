@@ -1,104 +1,141 @@
-from flask import Flask, request, jsonify
-import os, tempfile, requests, traceback
-from deepface import DeepFace
+from flask import Flask, request, jsonify, send_file
+import os
+import requests
+from io import BytesIO
+from PIL import Image
+import tempfile
+import traceback
 
+# ===================================
+# FLASK INITIALIZATION
+# ===================================
 app = Flask(__name__)
 
-# =========================================
-# 🧩 IMAGE DOWNLOAD FUNCTION
-# =========================================
-def download_image(image_url, save_path):
+# Lazy load for DeepFace
+deepface_model = None
+def get_deepface():
+    global deepface_model
+    if deepface_model is None:
+        from deepface import DeepFace
+        deepface_model = DeepFace
+    return deepface_model
+
+
+# ===================================
+# HEALTH CHECK (Render uses this)
+# ===================================
+@app.route("/")
+def home():
+    return jsonify({"status": "Talentify Face API is running ✅"})
+
+
+# ===================================
+# IMAGE PROXY
+# (used by find_similar.php to bypass 406 / blocked images)
+# ===================================
+@app.route("/image_proxy.php")
+def image_proxy():
+    url = request.args.get("url")
+    if not url:
+        return jsonify({"error": "Missing 'url' parameter"}), 400
+
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; TalentifyFaceAPI/1.0)",
-            "Accept": "image/*,*/*;q=0.8"
-        }
-        response = requests.get(image_url, headers=headers, timeout=15, allow_redirects=True)
-        content_type = response.headers.get('Content-Type', '')
-        if response.status_code == 200 and 'image' in content_type:
-            with open(save_path, "wb") as f:
-                f.write(response.content)
-            return True
-        else:
-            print(f"⚠️ Invalid image response: {response.status_code}, {content_type}")
-            return False
+        headers = {"User-Agent": "Mozilla/5.0 (Talentify Image Proxy)"}
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+
+        img = Image.open(BytesIO(r.content))
+        img_format = img.format if img.format else "JPEG"
+
+        img_io = BytesIO()
+        img.save(img_io, format=img_format)
+        img_io.seek(0)
+
+        return send_file(img_io, mimetype=f"image/{img_format.lower()}")
+
     except Exception as e:
-        print(f"❌ Download failed: {e}")
-        return False
+        return jsonify({
+            "error": f"Failed to download image: {str(e)}",
+            "trace": traceback.format_exc()
+        }), 500
 
 
-# =========================================
-# 🔍 FIND SIMILAR FACES ENDPOINT
-# =========================================
+# ===================================
+# FIND SIMILAR FACES
+# (Compatible with your PHP: find_similar.php)
+# ===================================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
         data = request.get_json(force=True)
-        school_id = data.get("school_id")
-        folder_url = data.get("folder_url")
-        image_url = data.get("image_url")
 
-        if not school_id or not folder_url or not image_url:
+        target_image_url = data.get("target_image")
+        candidate_images = data.get("candidate_images")
+
+        if not target_image_url or not candidate_images:
             return jsonify({"error": "Missing parameters"}), 400
 
-        print(f"📩 Received request: school={school_id}, target={image_url}")
+        # Download target image
+        target_response = requests.get(
+            f"https://talentify.co.in/school/image_proxy.php?url={target_image_url}",
+            headers={"User-Agent": "Mozilla/5.0 (Talentify API)"},
+            timeout=10
+        )
+        target_response.raise_for_status()
 
-        # List all images from the school folder using the proxy
-        list_url = f"{folder_url}/list_images.php?school_id={school_id}"
-        image_list_response = requests.get(list_url, timeout=15)
-        image_list = image_list_response.json().get("images", [])
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as target_file:
+            target_file.write(target_response.content)
+            target_path = target_file.name
 
-        if not image_list:
-            return jsonify({"error": "No images found in folder"}), 404
+        DeepFace = get_deepface()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target_path = os.path.join(tmpdir, "target.jpg")
+        results = []
+        for img_url in candidate_images:
+            try:
+                candidate_response = requests.get(
+                    f"https://talentify.co.in/school/image_proxy.php?url={img_url}",
+                    headers={"User-Agent": "Mozilla/5.0 (Talentify API)"},
+                    timeout=10
+                )
+                candidate_response.raise_for_status()
 
-            # Download target image
-            if not download_image(image_url, target_path):
-                return jsonify({"error": f"Failed to download target image: {image_url}"}), 400
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as candidate_file:
+                    candidate_file.write(candidate_response.content)
+                    candidate_path = candidate_file.name
 
-            results = []
-            for candidate in image_list:
-                candidate_url = f"{folder_url}/{candidate}"
-                candidate_path = os.path.join(tmpdir, os.path.basename(candidate))
+                verification = DeepFace.verify(
+                    img1_path=target_path,
+                    img2_path=candidate_path,
+                    model_name="Facenet",
+                    detector_backend="mtcnn",
+                    enforce_detection=False
+                )
 
-                if not download_image(candidate_url, candidate_path):
-                    continue
+                results.append({
+                    "image": img_url,
+                    "verified": verification.get("verified", False),
+                    "distance": verification.get("distance", None)
+                })
 
-                try:
-                    # Compare faces (Facenet512 → accurate for Indian/Asian faces)
-                    verify = DeepFace.verify(
-                        img1_path=target_path,
-                        img2_path=candidate_path,
-                        model_name="Facenet512",
-                        distance_metric="cosine",
-                        enforce_detection=False
-                    )
-                    distance = verify.get("distance", 1.0)
-                    verified = verify.get("verified", False)
-                    if verified or distance < 0.35:
-                        results.append({
-                            "image_url": candidate_url,
-                            "similarity": round(1 - distance, 3)
-                        })
-                except Exception as e:
-                    print(f"⚠️ Error comparing {candidate_url}: {e}")
-                    continue
+            except Exception as e:
+                results.append({
+                    "image": img_url,
+                    "error": str(e)
+                })
 
-        if not results:
-            return jsonify({"message": "No similar faces found."})
-        return jsonify({"similar_images": results})
+        os.remove(target_path)
+        return jsonify({"results": results})
 
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": f"Failed to process: {str(e)}",
+            "trace": traceback.format_exc()
+        }), 500
 
 
-@app.route("/")
-def home():
-    return "✅ Talentify Face API (Asian Model) is running."
-
-
+# ===================================
+# RUN APP (Render uses $PORT)
+# ===================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

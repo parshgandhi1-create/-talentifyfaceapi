@@ -1,8 +1,7 @@
 # =====================================
-# Talentify Face API - Render Deployment
+# Talentify AI Face API - Render Edition
 # =====================================
 
-# Core tools
 setuptools>=68.0.0
 wheel>=0.41.2
 pip>=23.3
@@ -11,6 +10,7 @@ pip>=23.3
 flask==3.0.3
 gunicorn==23.0.0
 requests==2.32.3
+beautifulsoup4==4.12.2
 
 # Image + numerical libraries
 opencv-python-headless==4.8.1.78
@@ -19,4 +19,4 @@ pillow==10.2.0
 
 # AI / Face Recognition
 deepface==0.0.92
-tensorflow-cpu==2.13.0  # ✅ CPU-only build (smaller, faster)
+tensorflow-cpu==2.13.0

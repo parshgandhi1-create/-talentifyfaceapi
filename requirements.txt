@@ -1,3 +1,5 @@
+setuptools>=68.0.0
+wheel
 flask==3.0.3
 opencv-python-headless==4.8.1.78
 numpy==1.24.4

@@ -1,23 +1,18 @@
-# --- Core build tools ---
+# Core build tools
 setuptools>=68.0.0
 wheel>=0.41.2
 pip>=23.3
 
-# --- Web framework ---
+# Web framework
 flask==3.0.3
-requests==2.31.0
+gunicorn==21.2.0
 
-# --- Image and numerical processing ---
+# Image and numerical processing
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
 pillow==10.2.0
 
-# --- AI / Deep Learning (Optimized for Render) ---
+# AI / Deep Learning
 tensorflow==2.13.0
-deepface==0.0.93
-
-# --- Optional, improves Asian face embeddings ---
-mtcnn==0.1.1
-retina-face==0.0.13
-keras==2.13.1
-scikit-learn==1.3.0
+deepface==0.0.92
+retina-face==0.0.14

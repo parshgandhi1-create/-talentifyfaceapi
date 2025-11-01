@@ -8,5 +8,4 @@ numpy==1.24.4
 pillow==10.2.0
 retinaface==1.1.1
 tensorflow==2.13.0
-tf-keras==2.13.0
 deepface==0.0.92

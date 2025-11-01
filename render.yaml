@@ -4,17 +4,9 @@ services:
     env: python
     plan: free
     region: oregon
-
     buildCommand: |
-      echo "🚀 Installing dependencies..."
-      pip install --upgrade pip setuptools wheel
+      python -m pip install --upgrade pip setuptools wheel
       pip install --no-cache-dir -r requirements.txt
-      echo "✅ Build complete."
-
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app --timeout 300
-
+    startCommand: gunicorn --workers=2 --threads=4 --timeout 300 --bind 0.0.0.0:$PORT app:app
     envVars:
       PYTHON_VERSION: 3.10.13
-      TF_CPP_MIN_LOG_LEVEL: "2"
-      DEEPFACE_HOME: "/opt/render/.deepface"
-      PORT: 5000

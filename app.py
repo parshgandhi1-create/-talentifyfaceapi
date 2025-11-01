@@ -1,13 +1,11 @@
 from flask import Flask, request, jsonify
 import os, tempfile, requests, traceback
 from deepface import DeepFace
-import cv2
-import numpy as np
 
 app = Flask(__name__)
 
 # =========================================
-# 🧩 SAFE IMAGE DOWNLOAD (handles 406 error)
+# 🧩 IMAGE DOWNLOAD FUNCTION
 # =========================================
 def download_image(image_url, save_path):
     try:
@@ -22,70 +20,85 @@ def download_image(image_url, save_path):
                 f.write(response.content)
             return True
         else:
-            print(f"⚠️ Not an image: {response.status_code}, {content_type}")
+            print(f"⚠️ Invalid image response: {response.status_code}, {content_type}")
             return False
     except Exception as e:
         print(f"❌ Download failed: {e}")
         return False
 
+
 # =========================================
-# 🔍 FIND SIMILAR FACES
+# 🔍 FIND SIMILAR FACES ENDPOINT
 # =========================================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
         data = request.get_json(force=True)
-        target_url = data.get("target_url")
-        image_urls = data.get("image_urls", [])
-        threshold = float(data.get("threshold", 0.35))
+        school_id = data.get("school_id")
+        folder_url = data.get("folder_url")
+        image_url = data.get("image_url")
 
-        if not target_url or not image_urls:
+        if not school_id or not folder_url or not image_url:
             return jsonify({"error": "Missing parameters"}), 400
+
+        print(f"📩 Received request: school={school_id}, target={image_url}")
+
+        # List all images from the school folder using the proxy
+        list_url = f"{folder_url}/list_images.php?school_id={school_id}"
+        image_list_response = requests.get(list_url, timeout=15)
+        image_list = image_list_response.json().get("images", [])
+
+        if not image_list:
+            return jsonify({"error": "No images found in folder"}), 404
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target_path = os.path.join(tmpdir, "target.jpg")
 
-            if not download_image(target_url, target_path):
-                return jsonify({"error": f"Failed to download target image: {target_url}"}), 400
+            # Download target image
+            if not download_image(image_url, target_path):
+                return jsonify({"error": f"Failed to download target image: {image_url}"}), 400
 
             results = []
-            for url in image_urls:
-                candidate_path = os.path.join(tmpdir, os.path.basename(url))
-                if not download_image(url, candidate_path):
+            for candidate in image_list:
+                candidate_url = f"{folder_url}/{candidate}"
+                candidate_path = os.path.join(tmpdir, os.path.basename(candidate))
+
+                if not download_image(candidate_url, candidate_path):
                     continue
 
                 try:
-                    # Compare using DeepFace tuned for Asian faces
+                    # Compare faces (Facenet512 → accurate for Indian/Asian faces)
                     verify = DeepFace.verify(
                         img1_path=target_path,
                         img2_path=candidate_path,
-                        model_name="Facenet512",  # More accurate for Indian/Asian faces
+                        model_name="Facenet512",
                         distance_metric="cosine",
                         enforce_detection=False
                     )
                     distance = verify.get("distance", 1.0)
                     verified = verify.get("verified", False)
-
-                    if verified or distance < threshold:
+                    if verified or distance < 0.35:
                         results.append({
-                            "image_url": url,
-                            "similarity_score": round(1 - distance, 3)
+                            "image_url": candidate_url,
+                            "similarity": round(1 - distance, 3)
                         })
                 except Exception as e:
-                    print(f"⚠️ Comparison error: {e}")
+                    print(f"⚠️ Error comparing {candidate_url}: {e}")
                     continue
 
         if not results:
-            return jsonify({"message": "No similar images found."})
-        return jsonify({"matches": results})
+            return jsonify({"message": "No similar faces found."})
+        return jsonify({"similar_images": results})
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/")
 def home():
-    return "✅ Talentify Face API is running."
+    return "✅ Talentify Face API (Asian Model) is running."
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

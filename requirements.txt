@@ -1,11 +1,16 @@
+# Core build tools
 setuptools>=68.0.0
 wheel>=0.41.2
 pip>=23.3
 
+# Web framework
 flask==3.0.3
+
+# Image and numerical processing
 opencv-python-headless==4.8.1.78
 numpy==1.24.4
 pillow==10.2.0
-retinaface==1.1.1
+
+# AI / Deep Learning
 tensorflow==2.13.0
 deepface==0.0.92

@@ -1,15 +1,14 @@
 services:
   - type: web
-    name: talentifyfaceapi
-    env: python
-    region: oregon
+    name: talentify-face-api
+    runtime: python
+    repo: https://github.com/your-username/talentify-face-api
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
     plan: free
-
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel
-      pip install --no-cache-dir -r requirements.txt
-
-    startCommand: gunicorn --workers=2 --threads=4 --timeout 300 --bind 0.0.0.0:$PORT app:app
+    region: oregon
+    autoDeploy: true
 
     envVars:
       PYTHON_VERSION: 3.10.13
@@ -18,3 +17,4 @@ services:
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
       PYTHONUNBUFFERED: 1
       DISABLE_DEEPFACE_ANALYZER: 1
+      PORT: 5000

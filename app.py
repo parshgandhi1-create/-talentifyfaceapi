@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from deepface import DeepFace
 import requests
-import os
 import tempfile
 import random
 
@@ -32,7 +31,7 @@ def find_similar():
             return jsonify({"error": "Missing parameters"}), 400
 
         # ----------------------------
-        # 🧱 Helper: Download image safely
+        # 🧱 Helper: Safe image downloader
         # ----------------------------
         def download_image(url):
             try:
@@ -52,10 +51,16 @@ def find_similar():
         # --- Download target image ---
         target_path = download_image(image_url)
 
-        # --- Fetch image list from PHP API ---
+        # ----------------------------
+        # 🧱 Fetch image list from PHP
+        # ----------------------------
         list_api = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
         try:
-            resp = requests.get(list_api, timeout=15)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/json,text/*;q=0.8",
+            }
+            resp = requests.get(list_api, headers=headers, timeout=15)
             resp.raise_for_status()
             images = resp.json()
         except Exception as e:
@@ -72,7 +77,9 @@ def find_similar():
         similar = []
         print(f"🧠 Comparing against {len(images)} images...")
 
-        # --- Compare each image ---
+        # ----------------------------
+        # 🔍 Compare each image
+        # ----------------------------
         for i, img_name in enumerate(images, 1):
             img_url = f"{folder_url}/{img_name}"
             try:
@@ -102,7 +109,7 @@ def find_similar():
 
 
 # ==========================================
-# 🚀 FLASK STARTUP
+# 🚀 FLASK STARTUP (Render)
 # ==========================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

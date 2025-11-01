@@ -1,20 +1,17 @@
 services:
   - type: web
     name: talentify-face-api
-    runtime: python
-    repo: https://github.com/your-username/talentify-face-api
-    branch: main
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    env: python
     plan: free
     region: oregon
-    autoDeploy: true
-
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 180 --workers 1 --threads 2 --bind 0.0.0.0:$PORT
     envVars:
-      PYTHON_VERSION: 3.10.13
-      DEEPFACE_HOME: /tmp/deepface
-      TF_CPP_MIN_LOG_LEVEL: 3
-      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
-      PYTHONUNBUFFERED: 1
-      DISABLE_DEEPFACE_ANALYZER: 1
-      PORT: 5000
+      - key: PYTHON_VERSION
+        value: 3.10.14
+      - key: TF_CPP_MIN_LOG_LEVEL
+        value: 3   # Suppress TensorFlow logs
+      - key: DEEPFACE_HOME
+        value: /opt/render/project/.deepface_cache

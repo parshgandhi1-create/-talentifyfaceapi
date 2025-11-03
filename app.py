@@ -1,97 +1,109 @@
+from flask import Flask, request, jsonify
+import os
+import requests
+import tempfile
+import shutil
+from deepface import DeepFace
+
+app = Flask(__name__)  # ✅ must be declared before any routes
+
+@app.route('/')
+def home():
+    return "Talentify Face API is running"
+
 @app.route('/find_similar', methods=['POST'])
 def find_similar():
-    data = request.get_json()
-
-    # ✅ Validate parameters
-    if not data or "school_id" not in data or "folder_url" not in data or "image_url" not in data:
-        return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
-
-    school_id = data["school_id"]
-    folder_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-    image_url = data["image_url"]
-
-    print(f"[INFO] Request received for school_id={school_id}")
-    print(f"[INFO] Target Image: {image_url}")
-    print(f"[INFO] Folder URL: {folder_url}")
-
-    # ===============================
-    # 1️⃣ Download target image
-    # ===============================
     try:
-        resp = requests.get(image_url, timeout=15)
-        resp.raise_for_status()
-        target_img = np.array(Image.open(BytesIO(resp.content)).convert("RGB"))
-        print("[Download] ✅ Target image downloaded successfully")
-    except Exception as e:
-        print(f"[Download] ❌ Failed: {e}")
-        return jsonify({"error": "Failed to download target image"}), 400
+        # === STEP 1: Receive parameters ===
+        school_id = request.form.get('school_id')
+        target_image_url = request.form.get('target_image')
 
-    # ===============================
-    # 2️⃣ Get candidate list from list_images.php
-    # ===============================
-    try:
-        res = requests.get(folder_url, timeout=15)
-        res.raise_for_status()
-        files = res.json()
-        if not isinstance(files, list) or len(files) == 0:
-            raise Exception("No images found in folder")
-        print(f"[Folder] ✅ Retrieved {len(files)} image names from list_images.php")
-    except Exception as e:
-        print(f"[Folder] ❌ Could not load image list: {e}")
-        return jsonify({"error": "No candidate images found for comparison"}), 400
+        if not school_id or not target_image_url:
+            return jsonify({"error": "Missing parameters (school_id, target_image)"}), 400
 
-    # ===============================
-    # 3️⃣ Download candidate images to temporary folder
-    # ===============================
-    base_path = f"/opt/render/.deepface/schools/{school_id}"
-    os.makedirs(base_path, exist_ok=True)
-    candidates = []
+        print(f"[INFO] Request received for school_id={school_id}")
+        print(f"[INFO] Target Image: {target_image_url}")
 
-    for filename in files:
-        img_url = f"https://talentify.co.in/uploads/schools/{school_id}/{filename}"
-        save_path = os.path.join(base_path, filename)
+        # === STEP 2: List images via your PHP endpoint ===
+        folder_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
+        print(f"[INFO] Folder URL: {folder_url}")
 
-        if not os.path.exists(save_path):
-            try:
-                r = requests.get(img_url, timeout=10)
-                r.raise_for_status()
-                with open(save_path, "wb") as f:
-                    f.write(r.content)
-            except Exception as e:
-                print(f"[Skip] Failed to download {img_url}: {e}")
-                continue
-        candidates.append(save_path)
+        response = requests.get(folder_url, timeout=20)
+        if response.status_code != 200:
+            return jsonify({"error": f"Failed to fetch image list: {response.status_code}"}), 400
 
-    if not candidates:
-        print("[Folder] ⚠️ No local candidate images found after download")
-        return jsonify({"error": "No candidate images found for comparison"}), 400
+        image_list = response.json()
+        if not image_list or len(image_list) == 0:
+            print("[Folder] ⚠️ No local candidate images found")
+            return jsonify({"error": "No candidate images found for comparison"}), 400
 
-    print(f"[Folder] ✅ {len(candidates)} candidate images ready for comparison")
+        # === STEP 3: Create temp directory ===
+        base_dir = tempfile.mkdtemp(prefix="deepface_")
+        target_path = os.path.join(base_dir, "target.jpg")
 
-    # ===============================
-    # 4️⃣ Compare embeddings
-    # ===============================
-    best_match = None
-    best_score = float('inf')
-
-    for img_path in candidates:
+        # === STEP 4: Download target image ===
         try:
-            result = DeepFace.verify(target_img, img_path, model_name="Facenet", enforce_detection=False)
-            dist = result.get("distance", 1.0)
-            print(f"[Compare] {os.path.basename(img_path)} → {dist:.4f}")
-            if dist < best_score:
-                best_score = dist
-                best_match = os.path.basename(img_path)
+            target_resp = requests.get(target_image_url, stream=True, timeout=20)
+            target_resp.raise_for_status()
+            with open(target_path, 'wb') as f:
+                shutil.copyfileobj(target_resp.raw, f)
+            print("[Download] ✅ Target image downloaded successfully")
         except Exception as e:
-            print(f"[Compare Error] {img_path}: {e}")
+            print(f"[Download] ❌ Failed to download target image: {e}")
+            shutil.rmtree(base_dir, ignore_errors=True)
+            return jsonify({"error": f"Failed to download target image: {str(e)}"}), 400
 
-    if not best_match:
-        return jsonify({"match": None, "score": None, "status": "no_match"})
+        # === STEP 5: Download candidate images ===
+        candidate_paths = []
+        for img_name in image_list:
+            img_url = f"https://talentify.co.in/uploads/schools/{school_id}/{img_name}"
+            candidate_path = os.path.join(base_dir, img_name)
+            try:
+                img_resp = requests.get(img_url, stream=True, timeout=20)
+                img_resp.raise_for_status()
+                with open(candidate_path, 'wb') as f:
+                    shutil.copyfileobj(img_resp.raw, f)
+                candidate_paths.append(candidate_path)
+            except Exception as e:
+                print(f"[Download] ❌ Failed for {img_url}: {e}")
+                continue
 
-    print(f"[Result] ✅ Best match: {best_match} (score={best_score})")
-    return jsonify({
-        "school_id": school_id,
-        "best_match": best_match,
-        "score": best_score,
-        "status": "success"
-    })
+        if not candidate_paths:
+            shutil.rmtree(base_dir, ignore_errors=True)
+            return jsonify({"error": "No candidate images successfully downloaded"}), 400
+
+        print(f"[INFO] {len(candidate_paths)} candidate images ready for comparison")
+
+        # === STEP 6: Run DeepFace similarity check ===
+        best_match = None
+        best_score = 9999
+
+        for path in candidate_paths:
+            try:
+                result = DeepFace.verify(target_path, path, model_name='VGG-Face', enforce_detection=False)
+                distance = result.get("distance", 9999)
+                if distance < best_score:
+                    best_score = distance
+                    best_match = os.path.basename(path)
+            except Exception as e:
+                print(f"[DeepFace] ⚠️ Error comparing {path}: {e}")
+                continue
+
+        shutil.rmtree(base_dir, ignore_errors=True)
+
+        if not best_match:
+            return jsonify({"error": "No face match found"}), 400
+
+        return jsonify({
+            "best_match": best_match,
+            "similarity_score": round(1 - best_score, 3)
+        })
+
+    except Exception as e:
+        print(f"[ERROR] {str(e)}")
+        return jsonify({"error": f"Face API returned HTTP 400", "response": str(e)}), 400
+
+
+# === Run server locally or on Render ===
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)

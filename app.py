@@ -1,99 +1,103 @@
 # ===================================
-# FINAL app.py (Talentify Face Match using DeepFace)
+# Talentify Face API — Base64 Simplified
 # ===================================
-
 from flask import Flask, request, jsonify
 from deepface import DeepFace
-import requests
-import numpy as np
-from io import BytesIO
-from PIL import Image
-import os
+import os, base64, cv2, numpy as np
 
 app = Flask(__name__)
 
-# ✅ Helper to download and prepare images
-def load_image_from_url(url):
+# ---------- CONFIG ----------
+UPLOAD_ROOT = "/app/schools"  # ✅ Folder where school uploads exist
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
+
+
+# ---------- HELPER: Decode Base64 Image ----------
+def decode_base64_image(image_base64):
     try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        img = Image.open(BytesIO(resp.content)).convert("RGB")
-        return np.array(img)
+        image_bytes = base64.b64decode(image_base64.split(",")[-1])
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     except Exception as e:
-        print(f"Image load failed for {url}: {e}")
+        print("❌ Base64 decode failed:", e)
         return None
 
-@app.route('/find_similar', methods=['POST'])
+
+# ---------- API: FIND SIMILAR ----------
+@app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
-        # ✅ 1. Read JSON body
-        data = request.get_json(force=True)
-        school_id = data.get('school_id')
-        folder_url = data.get('folder_url')
-        image_url = data.get('image_url')  # same key names as before
+        data = request.get_json()
+        school_id = data.get("school_id")
+        image_base64 = data.get("image_base64")
 
-        # ✅ 2. Validate
-        if not school_id or not folder_url or not image_url:
-            return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
+        if not school_id or not image_base64:
+            return jsonify({"status": "error", "error": "Missing parameters"}), 400
 
-        # ✅ 3. Load target image
-        target_img = load_image_from_url(image_url)
+        # Decode input image
+        target_img = decode_base64_image(image_base64)
         if target_img is None:
-            return jsonify({"error": "Failed to download target image"}), 400
+            return jsonify({"status": "error", "error": "Invalid base64 image"}), 400
 
-        # ✅ 4. Get folder image list
-        list_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-        list_resp = requests.get(list_url, timeout=15)
-        if list_resp.status_code != 200:
-            return jsonify({"error": "Failed to get image list"}), 400
+        # School folder
+        folder_path = os.path.join(UPLOAD_ROOT, str(school_id))
+        if not os.path.exists(folder_path):
+            return jsonify({"status": "error", "error": f"School folder not found: {folder_path}"}), 404
 
-        image_files = list_resp.json()
-        if not isinstance(image_files, list) or len(image_files) == 0:
-            return jsonify({"error": "No candidate images found for comparison"}), 400
+        # Collect all images in folder
+        valid_ext = (".jpg", ".jpeg", ".png", ".webp")
+        all_files = [
+            os.path.join(folder_path, f)
+            for f in os.listdir(folder_path)
+            if f.lower().endswith(valid_ext)
+        ]
 
-        # ✅ 5. Compare using DeepFace
+        if not all_files:
+            return jsonify({"status": "error", "error": "No images found in school folder"}), 404
+
+        print(f"📁 Comparing with {len(all_files)} images in {folder_path}")
+
         best_match = None
-        best_score = float("inf")
-        best_file = None
+        best_score = 9999
 
-        for filename in image_files:
-            candidate_url = f"https://talentify.co.in/uploads/schools/{school_id}/{filename}"
-            candidate_img = load_image_from_url(candidate_url)
-            if candidate_img is None:
-                continue
+        # Save the base64 temp image for comparison
+        temp_path = "/tmp/input_face.jpg"
+        cv2.imwrite(temp_path, target_img)
 
+        for file_path in all_files:
             try:
-                result = DeepFace.verify(target_img, candidate_img, model_name="VGG-Face", enforce_detection=False)
-                distance = result.get("distance", 1.0)
+                result = DeepFace.verify(
+                    img1_path=temp_path,
+                    img2_path=file_path,
+                    model_name="VGG-Face",
+                    enforce_detection=False
+                )
+                distance = result.get("distance", 9999)
                 if distance < best_score:
                     best_score = distance
-                    best_match = filename
-                    best_file = candidate_url
+                    best_match = os.path.basename(file_path)
             except Exception as e:
-                print(f"Comparison failed for {filename}: {e}")
-                continue
+                print("⚠️ Skipped:", file_path, e)
 
-        # ✅ 6. Return result
         if best_match:
-            similarity = round((1 - best_score) * 100, 2)
             return jsonify({
-                "match_found": True,
-                "matched_image": best_match,
-                "similarity_score": similarity,
-                "image_url": best_file
+                "status": "success",
+                "best_match": best_match,
+                "score": round(best_score, 4)
             })
         else:
-            return jsonify({"match_found": False, "message": "No similar faces found"})
+            return jsonify({"status": "error", "error": "No face match found"})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("❌ Server error:", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@app.route('/')
+# ---------- HEALTH CHECK ----------
+@app.route("/", methods=["GET"])
 def home():
-    return "Talentify Face API running successfully ✅"
+    return jsonify({"status": "running", "version": "base64_final"})
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)

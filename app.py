@@ -1,9 +1,6 @@
 from flask import Flask, request, jsonify
-import face_recognition
-import requests
-from io import BytesIO
-from bs4 import BeautifulSoup
-import re
+from deepface import DeepFace
+import cv2, numpy as np, requests, os
 
 app = Flask(__name__)
 

@@ -1,5 +1,5 @@
 # ===================================
-# Talentify Face API — Base64 (Render Safe Final)
+# Talentify Face API — Base64 Simplified (Final Render Version)
 # ===================================
 from flask import Flask, request, jsonify
 from deepface import DeepFace
@@ -8,7 +8,7 @@ import os, base64, cv2, numpy as np
 app = Flask(__name__)
 
 # ---------- CONFIG ----------
-UPLOAD_ROOT = "/tmp/schools"  # ✅ Writable directory on Render free plan
+UPLOAD_ROOT = "/tmp/schools"  # ✅ Safe for Render free plan
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
 
@@ -27,24 +27,23 @@ def decode_base64_image(image_base64):
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json()
         school_id = data.get("school_id")
-        image_base64 = data.get("image_base64")
+        image_base64 = data.get("image_base64") or data.get("target_base64")  # ✅ support both keys
 
         if not school_id or not image_base64:
             return jsonify({"error": "Missing parameters (school_id, image_base64)"}), 400
 
-        # Decode the input base64 image
+        # Decode target image
         target_img = decode_base64_image(image_base64)
         if target_img is None:
             return jsonify({"error": "Invalid base64 image"}), 400
 
-        # Define school folder
+        # Ensure school folder exists
         folder_path = os.path.join(UPLOAD_ROOT, str(school_id))
-        if not os.path.exists(folder_path):
-            return jsonify({"error": f"School folder not found: {folder_path}"}), 404
+        os.makedirs(folder_path, exist_ok=True)
 
-        # Collect all valid images
+        # Collect all local images
         valid_ext = (".jpg", ".jpeg", ".png", ".webp")
         all_files = [
             os.path.join(folder_path, f)
@@ -53,17 +52,15 @@ def find_similar():
         ]
 
         if not all_files:
-            return jsonify({"error": "No images found in school folder"}), 404
+            return jsonify({"error": f"No images found in school folder {folder_path}"}), 404
 
-        print(f"🔍 Comparing with {len(all_files)} images in {folder_path}")
+        print(f"📁 Comparing with {len(all_files)} images in {folder_path}")
 
-        # Save the base64 input as a temp image for comparison
+        # Save temp image
         temp_path = "/tmp/input_face.jpg"
         cv2.imwrite(temp_path, target_img)
 
-        best_match = None
-        best_score = 9999
-
+        best_match, best_score = None, 9999
         for file_path in all_files:
             try:
                 result = DeepFace.verify(
@@ -85,8 +82,8 @@ def find_similar():
                 "best_match": best_match,
                 "score": round(best_score, 4)
             })
-
-        return jsonify({"status": "error", "error": "No face match found"})
+        else:
+            return jsonify({"error": "No face match found"})
 
     except Exception as e:
         print("❌ Server error:", e)

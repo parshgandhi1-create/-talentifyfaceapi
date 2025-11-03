@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import os, requests, numpy as np
+import os, requests, cv2, numpy as np
 from deepface import DeepFace
 from PIL import Image
 from io import BytesIO
@@ -8,13 +8,15 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Talentify Face API is running"
+    return "✅ Talentify Face API is running successfully!"
 
 @app.route('/find_similar', methods=['POST'])
 def find_similar():
     data = request.get_json()
 
-    # ✅ Parameter validation
+    # ----------------------------------------
+    # 1️⃣ Validate Parameters
+    # ----------------------------------------
     if not data or "school_id" not in data or "folder_url" not in data or "image_url" not in data:
         return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
@@ -22,69 +24,90 @@ def find_similar():
     folder_url = data["folder_url"].rstrip('/')
     image_url = data["image_url"]
 
-    # ===============================
-    # 1️⃣ Download target image
-    # ===============================
-    print(f"[Download] Trying: {image_url}")
+    print(f"[INFO] Request received for school_id={school_id}")
+    print(f"[INFO] Target Image: {image_url}")
+    print(f"[INFO] Folder URL: {folder_url}")
+
+    # ----------------------------------------
+    # 2️⃣ Download Target Image (via image_proxy)
+    # ----------------------------------------
     try:
-        resp = requests.get(image_url, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*"
+        }
+        resp = requests.get(image_url, headers=headers, timeout=20)
         resp.raise_for_status()
         target_img = np.array(Image.open(BytesIO(resp.content)).convert("RGB"))
+        print("[Download] ✅ Target image downloaded successfully")
     except Exception as e:
-        print(f"[Download] ❌ Failed: {e}")
-        return jsonify({"error": "Failed to download target image"}), 400
+        print(f"[Download] ❌ Failed to download image: {e}")
+        return jsonify({"error": f"Failed to download target image: {str(e)}"}), 400
 
-    print("[Download] ✅ Image loaded successfully")
+    # ----------------------------------------
+    # 3️⃣ Load Candidate Images from Local Mirror Folder
+    # ----------------------------------------
+    base_path = f"/opt/render/.deepface/schools/{school_id}"
+    os.makedirs(base_path, exist_ok=True)
 
-    # ===============================
-    # 2️⃣ Fetch image list from list_images.php
-    # ===============================
-    list_api = f"{folder_url}/list_images.php?school_id={school_id}"
-    try:
-        list_resp = requests.get(list_api, timeout=10)
-        list_resp.raise_for_status()
-        candidates = list_resp.json()
-        if not isinstance(candidates, list) or not candidates:
-            raise ValueError("Empty or invalid JSON list")
-    except Exception as e:
-        print(f"[Folder] ❌ Failed to fetch list: {e}")
-        return jsonify({"error": "Failed to get image list"}), 400
+    candidates = [
+        os.path.join(base_path, name)
+        for name in os.listdir(base_path)
+        if name.lower().endswith(('.jpg', '.jpeg', '.png'))
+    ]
 
-    print(f"[Folder] ✅ Found {len(candidates)} candidates")
+    if not candidates:
+        print("[Folder] ⚠️ No local candidate images found")
+        return jsonify({"error": "No candidate images found for comparison"}), 400
 
-    # ===============================
-    # 3️⃣ Compare embeddings remotely
-    # ===============================
+    print(f"[Folder] ✅ Found {len(candidates)} candidate(s) locally")
+
+    # ----------------------------------------
+    # 4️⃣ Compare Using DeepFace
+    # ----------------------------------------
     best_match = None
     best_score = float('inf')
 
-    for filename in candidates:
+    for img_path in candidates:
         try:
-            proxy_url = f"{folder_url}/image_proxy.php?url={folder_url.replace('/school', '/uploads/schools')}/{school_id}/{filename}"
-            resp = requests.get(proxy_url, timeout=10)
-            resp.raise_for_status()
-            cand_img = np.array(Image.open(BytesIO(resp.content)).convert("RGB"))
-
-            result = DeepFace.verify(target_img, cand_img, model_name="Facenet", enforce_detection=False)
+            result = DeepFace.verify(
+                target_img, img_path,
+                model_name="Facenet",
+                enforce_detection=False
+            )
             dist = result.get("distance", 1.0)
-            print(f"[Compare] {filename} → distance={dist:.4f}")
+            print(f"[Compare] {os.path.basename(img_path)} → distance={dist:.4f}")
 
             if dist < best_score:
                 best_score = dist
-                best_match = filename
+                best_match = os.path.basename(img_path)
         except Exception as e:
-            print(f"Error comparing {filename}: {e}")
+            print(f"[Error] Failed comparing {img_path}: {e}")
 
     if not best_match:
-        return jsonify({"match": None, "score": None, "status": "no_match"})
+        print("[Result] ❌ No match found")
+        return jsonify({
+            "school_id": school_id,
+            "status": "no_match",
+            "match": None,
+            "score": None
+        })
 
-    print(f"[Result] ✅ Best match: {best_match} (score={best_score})")
+    print(f"[Result] ✅ Best match: {best_match} (score={best_score:.4f})")
+
+    # ----------------------------------------
+    # 5️⃣ Return JSON Response
+    # ----------------------------------------
     return jsonify({
         "school_id": school_id,
         "best_match": best_match,
-        "score": best_score,
+        "score": round(best_score, 4),
         "status": "success"
     })
 
+# ----------------------------------------
+# 🚀 Start Flask App
+# ----------------------------------------
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)

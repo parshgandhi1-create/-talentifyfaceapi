@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify
-import requests, os
 import face_recognition
-from PIL import Image
+import requests
 from io import BytesIO
+from bs4 import BeautifulSoup
+import re
 
 app = Flask(__name__)
 
@@ -21,21 +22,18 @@ def find_similar():
         if not all([school_id, folder_url, image_url]):
             return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
-        # Download target image
+        # ✅ Download target image
         target_res = requests.get(image_url, timeout=10)
         if target_res.status_code != 200:
             return jsonify({"error": "Failed to download target image"}), 404
 
         target_img = face_recognition.load_image_file(BytesIO(target_res.content))
-        target_encodings = face_recognition.face_encodings(target_img)
-        if not target_encodings:
+        target_enc = face_recognition.face_encodings(target_img)
+        if not target_enc:
             return jsonify({"error": "No face found in target image"}), 400
-        target_encoding = target_encodings[0]
+        target_encoding = target_enc[0]
 
-        # Fetch all photos from folder
-        import re
-        from bs4 import BeautifulSoup
-
+        # ✅ Fetch folder contents
         folder_res = requests.get(folder_url, timeout=10)
         if folder_res.status_code != 200:
             return jsonify({"error": f"Folder not accessible: {folder_url}"}), 404
@@ -48,6 +46,7 @@ def find_similar():
         if not img_urls:
             return jsonify({"error": f"No images found in {folder_url}"}), 404
 
+        # ✅ Compare all images
         best_match = None
         best_score = 0.0
 
@@ -61,7 +60,7 @@ def find_similar():
                 if not enc:
                     continue
                 distance = face_recognition.face_distance([target_encoding], enc[0])[0]
-                score = 1 - distance  # similarity
+                score = 1 - distance
                 if score > best_score:
                     best_score = score
                     best_match = img_url

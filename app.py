@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
 from deepface import DeepFace
 import cv2, numpy as np, requests, os, re
-from bs4 import BeautifulSoup
 from io import BytesIO
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
@@ -15,71 +15,56 @@ def find_similar():
     try:
         data = request.get_json(force=True)
         school_id = data.get("school_id")
-        folder_url = data.get("folder_url")
+        folder_url = data.get("folder_url")   # ✅ e.g. https://talentify.co.in/list_images.php?school_id=1
         image_url = data.get("image_url")
 
         if not all([school_id, folder_url, image_url]):
             return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
-        # ✅ Add headers to prevent 404/406 on proxy
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-
         # ✅ Download target image
-        target_res = requests.get(image_url, headers=headers, timeout=10)
+        target_res = requests.get(image_url, timeout=10)
         if target_res.status_code != 200:
-            print("❌ Failed to fetch:", image_url, "Status:", target_res.status_code)
-            return jsonify({
-                "error": "Failed to download target image",
-                "response": f"HTTP {target_res.status_code}"
-            }), 404
+            return jsonify({"error": "Failed to download target image"}), 404
 
-        # Convert target image to numpy array (for DeepFace)
-        target_arr = np.frombuffer(target_res.content, np.uint8)
-        target_img = cv2.imdecode(target_arr, cv2.IMREAD_COLOR)
+        target_img_path = f"temp_target_{school_id}.jpg"
+        with open(target_img_path, "wb") as f:
+            f.write(target_res.content)
 
-        # ✅ Fetch folder contents
-        folder_res = requests.get(folder_url, headers=headers, timeout=10)
+        # ✅ Fetch list of images from PHP (JSON response)
+        folder_res = requests.get(folder_url, timeout=10)
         if folder_res.status_code != 200:
             return jsonify({"error": f"Folder not accessible: {folder_url}"}), 404
 
-        soup = BeautifulSoup(folder_res.text, "html.parser")
-        img_urls = [
-            folder_url + href
-            for href in re.findall(r'photo_[^"\'<>]+\.(?:jpg|jpeg|png|webp)', folder_res.text, re.IGNORECASE)
-        ]
-        if not img_urls:
-            return jsonify({"error": f"No images found in {folder_url}"}), 404
+        try:
+            file_list = folder_res.json()
+        except:
+            return jsonify({"error": "Invalid JSON received from folder_url"}), 500
 
-        # ✅ Compare all images using DeepFace
+        if not file_list:
+            return jsonify({"error": f"No images found for school_id {school_id}"}), 404
+
+        # ✅ Build full URLs from filenames
+        base_url = f"https://talentify.co.in/uploads/schools/{school_id}/"
+        img_urls = [base_url + f for f in file_list]
+
+        # ✅ Compare faces using DeepFace
         best_match = None
         best_score = 0.0
 
         for img_url in img_urls:
             try:
-                img_res = requests.get(img_url, headers=headers, timeout=10)
-                if img_res.status_code != 200:
-                    continue
-
-                img_arr = np.frombuffer(img_res.content, np.uint8)
-                img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-
-                # Compare using DeepFace
-                result = DeepFace.verify(target_img, img, enforce_detection=False)
-                score = 1 - result["distance"] if "distance" in result else 0
-
-                if score > best_score:
-                    best_score = score
-                    best_match = img_url
-
-            except Exception as e:
-                print("⚠️ Error comparing:", img_url, e)
+                result = DeepFace.verify(img1_path=target_img_path, img2_path=img_url, enforce_detection=False)
+                if result.get("verified"):
+                    score = 1 - result.get("distance", 1.0)
+                    if score > best_score:
+                        best_score = score
+                        best_match = img_url
+            except Exception:
                 continue
+
+        # ✅ Cleanup temporary file
+        if os.path.exists(target_img_path):
+            os.remove(target_img_path)
 
         if not best_match:
             return jsonify({"error": "No match found"}), 404

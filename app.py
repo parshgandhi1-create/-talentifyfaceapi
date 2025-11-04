@@ -1,65 +1,57 @@
 from flask import Flask, request, jsonify
 from deepface import DeepFace
-import requests, os, tempfile, signal, shutil
+import requests, os
 from io import BytesIO
+from PIL import Image
 
 app = Flask(__name__)
 
-# ✅ Preload lightweight SFace model (fast, CPU friendly)
-print("🔄 Preloading SFace model...")
-MODEL = DeepFace.build_model("SFace")
-print("✅ SFace model ready.")
-
-# =============================
-# Utility: safe image downloader
-# =============================
-def download_image_safely(url, save_path):
-    """
-    Download image with retries and proxy fallback.
-    """
+# ============================================================
+# ✅ SAFE IMAGE DOWNLOADER (via proxy)
+# ============================================================
+def download_image_safely(url, save_path=None):
     try:
-        # Direct download attempt
-        res = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if res.status_code == 200 and res.content:
-            with open(save_path, "wb") as f:
-                f.write(res.content)
-            return True
+        # Always use proxy for Talentify uploads
+        if "talentify.co.in/uploads" in url:
+            url = f"https://talentify.co.in/school/image_proxy.php?url={url}"
 
-        # Fallback to image_proxy if direct failed
-        proxy_url = f"https://talentify.co.in/school/image_proxy.php?url={url}"
-        res = requests.get(proxy_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if res.status_code == 200 and res.content:
-            with open(save_path, "wb") as f:
-                f.write(res.content)
-            return True
-        else:
-            print(f"⚠️ Proxy fetch failed ({res.status_code}) for {url}")
-            return False
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FaceMatch/1.0",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive"
+        }
+
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            print(f"⚠️ Proxy download failed ({res.status_code}): {url}")
+            return None
+
+        img = Image.open(BytesIO(res.content)).convert("RGB")
+        img = img.resize((512, 512))
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            img.save(save_path)
+
+        return img
 
     except Exception as e:
-        print(f"❌ Download failed for {url}: {e}")
-        return False
+        print(f"❌ download_image_safely error for {url}: {e}")
+        return None
 
 
-# =============================
-# Utility: timeout guard
-# =============================
-def timeout_handler(signum, frame):
-    raise TimeoutError("⏰ DeepFace operation timed out")
-
-signal.signal(signal.SIGALRM, timeout_handler)
-
-# =============================
-# Root route
-# =============================
+# ============================================================
+# ✅ HEALTH CHECK
+# ============================================================
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "running", "version": "render_final_v3"})
+    return jsonify({"status": "running", "version": "final_optimized"})
 
 
-# =============================
-# Main API route
-# =============================
+# ============================================================
+# ✅ MAIN FACE MATCH ROUTE
+# ============================================================
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
     try:
@@ -71,101 +63,80 @@ def find_similar():
         if not all([school_id, folder_url, image_url]):
             return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
-        print(f"📡 Received request: school_id={school_id}")
+        print(f"📡 Request received | school_id={school_id}")
 
-        # =============================
-        # Step 1️⃣: Create temp folder
-        # =============================
-        temp_folder = tempfile.mkdtemp(prefix=f"school_{school_id}_")
-        target_path = os.path.join(temp_folder, "target.jpg")
+        # Download target image
+        target_img = download_image_safely(image_url)
+        if target_img is None:
+            return jsonify({"error": "Failed to download target image"}), 404
 
-        # =============================
-        # Step 2️⃣: Download target image
-        # =============================
-        if not download_image_safely(image_url, target_path):
-            shutil.rmtree(temp_folder, ignore_errors=True)
-            return jsonify({"error": "Failed to download target image via proxy"}), 404
-
-        # =============================
-        # Step 3️⃣: Get list of school images
-        # =============================
+        # Fetch folder image list
         list_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-        res = requests.get(list_url, timeout=10)
-        if res.status_code != 200:
-            shutil.rmtree(temp_folder, ignore_errors=True)
-            return jsonify({"error": "Folder not accessible (API 406)"}), 404
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FaceMatch/1.0",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        folder_res = requests.get(list_url, timeout=15, headers=headers)
 
-        images = res.json()
-        if not images:
-            shutil.rmtree(temp_folder, ignore_errors=True)
-            return jsonify({"error": "No images found"}), 404
+        print(f"📁 list_images.php returned HTTP {folder_res.status_code}")
 
-        # Limit to 3 images for memory safety
-        images = images[:3]
-        print(f"🖼️ Limiting to first 3 images: {images}")
+        if folder_res.status_code != 200:
+            return jsonify({"error": f"Folder not accessible (API {folder_res.status_code})"}), 404
 
-        # =============================
-        # Step 4️⃣: Download each image locally
-        # =============================
-        local_images = []
-        for img_name in images:
-            img_url = f"{folder_url}{img_name}"
-            save_path = os.path.join(temp_folder, img_name)
-            if download_image_safely(img_url, save_path):
-                local_images.append(save_path)
+        img_files = folder_res.json()
+        if not isinstance(img_files, list) or len(img_files) == 0:
+            return jsonify({"error": f"No images found for school {school_id}"}), 404
 
-        if not local_images:
-            shutil.rmtree(temp_folder, ignore_errors=True)
-            return jsonify({"error": "No downloadable images found"}), 404
+        # ✅ Limit to 3
+        img_files = img_files[:3]
+        print(f"🖼️ Limited to 3 images: {img_files}")
 
-        # =============================
-        # Step 5️⃣: Compare using DeepFace (SFace)
-        # =============================
         best_match = None
         best_score = 0.0
 
-        signal.alarm(25)  # ⏰ Limit operation to 25 seconds
-
-        for img_path in local_images:
-            try:
-                result = DeepFace.verify(
-                    img1_path=target_path,
-                    img2_path=img_path,
-                    model_name="SFace",
-                    enforce_detection=False
-                )
-                score = float(result.get("similarity", 0.0))
-                if score > best_score:
-                    best_score = score
-                    best_match = img_path
-            except Exception as e:
-                print(f"⚠️ Comparison failed for {img_path}: {e}")
+        # Compare
+        for file_name in img_files:
+            img_url = f"{folder_url}{file_name}"
+            candidate_img = download_image_safely(img_url)
+            if candidate_img is None:
                 continue
 
-        signal.alarm(0)
+            try:
+                result = DeepFace.verify(
+                    target_img,
+                    candidate_img,
+                    enforce_detection=False,
+                    model_name="Facenet"
+                )
+                score = 1 - result["distance"]
 
-        # =============================
-        # Step 6️⃣: Cleanup & Response
-        # =============================
-        shutil.rmtree(temp_folder, ignore_errors=True)
+                print(f"✅ Compared {file_name}: score={round(score,3)}")
+
+                if score > best_score:
+                    best_score = score
+                    best_match = img_url
+
+            except Exception as e:
+                print(f"⚠️ DeepFace error on {file_name}: {e}")
+                continue
 
         if not best_match:
             return jsonify({"error": "No match found"}), 404
 
         return jsonify({
             "status": "success",
-            "best_match": best_match.split("/")[-1],
-            "score": round(best_score, 3)
+            "best_match": best_match,
+            "score": round(float(best_score), 3)
         })
 
-    except TimeoutError as te:
-        print("⏰ Timeout: ", te)
-        return jsonify({"error": "DeepFace processing timed out"}), 504
-
     except Exception as e:
-        print("❌ Exception: ", e)
+        print(f"🔥 ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================
+# ✅ START FLASK APP
+# ============================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

@@ -67,7 +67,8 @@ def find_similar():
 
         # ✅ Fetch image list via list_images.php
         list_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-        folder_res = requests.get(list_url, timeout=15)
+        headers = {"User-Agent": "Mozilla/5.0 (FaceMatch/1.0)"}
+        folder_res = requests.get(list_url, timeout=15, headers=headers)
 
         if folder_res.status_code != 200:
             return jsonify({"error": f"Folder not accessible (API {folder_res.status_code})"}), 404

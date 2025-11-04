@@ -4,6 +4,7 @@ import cv2, numpy as np, requests, os, re
 from io import BytesIO
 from bs4 import BeautifulSoup
 
+
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])

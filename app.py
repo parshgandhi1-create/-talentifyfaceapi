@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "running", "version": "url_final_render_proxy"})
+    return jsonify({"status": "running", "version": "url_final_render_proxy_headers"})
 
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
@@ -25,8 +25,14 @@ def find_similar():
         proxy_base = "https://talentify.co.in/school/image_proxy.php?url="
         proxied_url = f"{proxy_base}{image_url}"
 
+        # ✅ Add headers to mimic browser (fixes 406)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "image/*,*/*;q=0.8"
+        }
+
         # ✅ Download target image through proxy
-        target_res = requests.get(proxied_url, timeout=10)
+        target_res = requests.get(proxied_url, headers=headers, timeout=10)
         if target_res.status_code != 200:
             return jsonify({"error": f"Failed to download target image via proxy ({target_res.status_code})"}), 404
 
@@ -64,7 +70,7 @@ def find_similar():
         for img_url in img_urls:
             try:
                 proxied_img_url = f"{proxy_base}{img_url}"
-                img_res = requests.get(proxied_img_url, timeout=10)
+                img_res = requests.get(proxied_img_url, headers=headers, timeout=10)
                 if img_res.status_code != 200:
                     continue
 

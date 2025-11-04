@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "running", "version": "url_proxy_fix"})
+    return jsonify({"status": "running", "version": "url_final_render_proxy"})
 
 @app.route("/find_similar", methods=["POST"])
 def find_similar():
@@ -21,52 +21,75 @@ def find_similar():
         if not all([school_id, folder_url, image_url]):
             return jsonify({"error": "Missing parameters (school_id, folder_url, image_url)"}), 400
 
-        # ✅ Build proxy URL for target image
+        # ✅ Route image through proxy
         proxy_base = "https://talentify.co.in/school/image_proxy.php?url="
-        proxy_image_url = proxy_base + image_url
+        proxied_url = f"{proxy_base}{image_url}"
 
-        # ✅ Download via proxy
-        target_res = requests.get(proxy_image_url, timeout=10)
+        # ✅ Download target image through proxy
+        target_res = requests.get(proxied_url, timeout=10)
         if target_res.status_code != 200:
-            return jsonify({"error": "Failed to download target image"}), 404
+            return jsonify({"error": f"Failed to download target image via proxy ({target_res.status_code})"}), 404
 
-        # ✅ Analyze target image
-        target_img = np.frombuffer(target_res.content, np.uint8)
-        target_img = cv2.imdecode(target_img, cv2.IMREAD_COLOR)
+        # ✅ Save target image temporarily
+        target_path = f"temp_target_{school_id}.jpg"
+        with open(target_path, "wb") as f:
+            f.write(target_res.content)
 
-        # ✅ List all images in folder via list_images.php
-        list_url = f"https://talentify.co.in/school/list_images.php?school_id={school_id}"
-        folder_res = requests.get(list_url, timeout=10)
+        # ✅ Verify DeepFace can read this image
+        try:
+            target_repr = DeepFace.represent(img_path=target_path, model_name="Facenet", enforce_detection=True)
+        except Exception as e:
+            os.remove(target_path)
+            return jsonify({"error": f"No face found in target image ({str(e)})"}), 400
+
+        # ✅ Fetch folder contents
+        folder_res = requests.get(folder_url, timeout=10)
         if folder_res.status_code != 200:
+            os.remove(target_path)
             return jsonify({"error": f"Folder not accessible: {folder_url}"}), 404
 
-        img_files = folder_res.json()
-        if not isinstance(img_files, list) or not img_files:
-            return jsonify({"error": "No images found in folder"}), 404
+        soup = BeautifulSoup(folder_res.text, "html.parser")
+        img_urls = [
+            folder_url + href
+            for href in re.findall(r'photo_[^"\'<>]+\.(?:jpg|jpeg|png|webp)', folder_res.text, re.IGNORECASE)
+        ]
+        if not img_urls:
+            os.remove(target_path)
+            return jsonify({"error": f"No images found in {folder_url}"}), 404
 
-        # ✅ Compare images using DeepFace
+        # ✅ Compare all images
         best_match = None
         best_score = 0.0
 
-        for file_name in img_files:
-            img_url = proxy_base + folder_url + file_name
+        for img_url in img_urls:
             try:
-                img_res = requests.get(img_url, timeout=10)
+                proxied_img_url = f"{proxy_base}{img_url}"
+                img_res = requests.get(proxied_img_url, timeout=10)
                 if img_res.status_code != 200:
                     continue
 
-                img_arr = np.frombuffer(img_res.content, np.uint8)
-                img_cv = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                if img_cv is None:
-                    continue
+                temp_img_path = f"temp_{os.path.basename(img_url)}"
+                with open(temp_img_path, "wb") as f:
+                    f.write(img_res.content)
 
-                result = DeepFace.verify(target_img, img_cv, model_name="VGG-Face", enforce_detection=False)
-                score = result.get("similarity", 1 - result.get("distance", 1))
-                if score > best_score:
-                    best_score = score
-                    best_match = folder_url + file_name
+                result = DeepFace.verify(
+                    img1_path=target_path,
+                    img2_path=temp_img_path,
+                    model_name="Facenet",
+                    enforce_detection=False
+                )
+
+                if result["verified"]:
+                    similarity = 1 - result["distance"]
+                    if similarity > best_score:
+                        best_score = similarity
+                        best_match = img_url
+
+                os.remove(temp_img_path)
             except Exception:
                 continue
+
+        os.remove(target_path)
 
         if not best_match:
             return jsonify({"error": "No match found"}), 404
